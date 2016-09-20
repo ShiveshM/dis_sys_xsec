@@ -190,8 +190,9 @@ def make_histo(array, weights):
     return ma.masked_equal(u_hist, 0)
 
 
-# def evaluate(params_dict, a_sys, b_sys, nu=True):
-def evaluate(params_dict, a_sys, nu=True):
+def evaluate(params_dict, systematics, nu=True, shape_only=False):
+    a_sys = systematics
+    # a_sys, b_sys, c_sys = systematics
     e_bin_sizes = get_bin_sizes(E_BINNING).astype(float)
     x_bin_sizes = get_bin_sizes(X_BINNING).astype(float)
     y_bin_sizes = get_bin_sizes(Y_BINNING).astype(float)
@@ -206,7 +207,9 @@ def evaluate(params_dict, a_sys, nu=True):
 
     logging.info('a_systematic {0}'.format(a_sys))
     # logging.info('b_systematic {0}'.format(b_sys))
-    weights = np.power(params_dict['x_array'], -a_sys)# * b_sys
+    # logging.info('c_systematic {0}'.format(c_sys))
+    # weights = c_sys + np.power(params_dict['x_array'], -a_sys) * b_sys
+    weights = np.power(params_dict['x_array'], -a_sys)
 
     if nu: nu_mask = params_dict['pdg_array'] > 0
     else: nu_mask = params_dict['pdg_array'] < 0
@@ -238,7 +241,10 @@ def evaluate(params_dict, a_sys, nu=True):
             
             factors = 1 / (y_bin_sizes * x_bin_sizes[x_idx])
             nu_histograms[e_idx][x_idx] = sigma_nu_x_e * factors
-            sigma_nu += np.sum(unumpy.nominal_values(sigma_nu_x_e.data))
+            if shape_only:
+                sigma_nu += np.sum(unumpy.nominal_values(sigma_nu_x_e.data))
+            else:
+                sigma_nu += np.sum(unumpy.nominal_values(sigma_nu_x_e_nw.data))
 
         if nu: scaling.append((WA_NU / 1E-38) / sigma_nu)
         else: scaling.append((WA_NUBAR / 1E-38) / sigma_nu)
@@ -253,7 +259,6 @@ def evaluate(params_dict, a_sys, nu=True):
 def calculate_chi2(data, mc, corrmatr):
     data = unumpy.nominal_values(data).data.astype(float)
     mc = unumpy.nominal_values(mc).data.astype(float)
-    bin_shape = map(len, (E_CENTERS, X_CENTERS, Y_CENTERS))
     diff = data - mc
     chi_squared = np.einsum('ijk,ijklmn,lmn->', diff, corrmatr, diff)
 
@@ -262,8 +267,8 @@ def calculate_chi2(data, mc, corrmatr):
 
 def wrap_calculation(systematics, args=None):
     NU_HISTOGRAMS = evaluate(
-        # args['params_dict'], systematics[0], systematics[1], nu=args['nu']
-        args['params_dict'], systematics, nu=args['nu']
+        args['params_dict'], systematics, nu=args['nu'],
+        shape_only=args['shape_only']
     )
     chi_squared = calculate_chi2(
         args['data'], NU_HISTOGRAMS, args['inv_cov_matrix']
@@ -288,16 +293,17 @@ if __name__ == '__main__':
     set_verbosity(3)
     nu_data_matrix, nubar_data_matrix = load_nutev_xsec_vec()
     inv_cov_matrix_nu, inv_cov_matrix_nubar = load_nutev_corrmatrix()
+
     params_dict = load_genie_mc()
     params_dict = only_discc(params_dict)
 
     # minim_result = opt.minimize(
     #     fun=wrap_calculation,
-    #     # x0=(0.0796178933896, 0.83061502),
-    #     x0=0.0796178933896,
+    #     x0=0.08,
     #     args={'params_dict'    : params_dict,
     #           'data'           : nu_data_matrix,
     #           'inv_cov_matrix' : inv_cov_matrix_nu,
+    #           'shape_only'     : True,
     #           'nu'             : True},
     #     method='L-BFGS-B',
     #     options={"disp"    : 0,
@@ -311,11 +317,11 @@ if __name__ == '__main__':
 
     minim_result = opt.minimize(
         fun=wrap_calculation,
-        # x0=(0.0796178933896, 0.83061502),
-        x0=0.1,
+        x0=0.08,
         args={'params_dict'    : params_dict,
               'data'           : nubar_data_matrix,
               'inv_cov_matrix' : inv_cov_matrix_nubar,
+              'shape_only'     : True,
               'nu'             : False},
         method='L-BFGS-B',
         options={"disp"    : 0,

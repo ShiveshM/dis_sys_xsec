@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 """
-Parameter estimation for DIS xsec based on least squares method.
+Testing correlation of dis parameters
 """
 from __future__ import print_function
 import os
@@ -15,6 +15,17 @@ import h5py
 from pisa.utils.log import logging, set_verbosity
 from uncertainties import ufloat, unumpy
 import ROOT
+
+import matplotlib as mpl
+# headless mode
+mpl.use('Agg')
+# fonts
+mpl.rcParams['mathtext.fontset'] = 'custom'
+mpl.rcParams['mathtext.rm'] = 'Bitstream Vera Sans'
+mpl.rcParams['mathtext.it'] = 'Bitstream Vera Sans:italic'
+mpl.rcParams['mathtext.bf'] = 'Bitstream Vera Sans:bold'
+from matplotlib import pyplot as plt
+from matplotlib.offsetbox import AnchoredText
 
 TYPE = 14
 NAME = r'gevgen_{0}'.format(TYPE)
@@ -41,79 +52,6 @@ WA_NUBAR = 0.334E-38
 
 def get_bin_sizes(bin_edges):
     return np.abs(np.diff(bin_edges))
-
-
-def load_nutev_xsec_vec():
-    """Load the NuTeV xsec data along with the total (stat+syst) error."""
-    logging.info('Loading NuTeV data from {0} and {1}'.format(DATA_NU,
-                                                              DATA_NUBAR))
-    with open(DATA_NU, 'r') as f:
-        table_nu = np.genfromtxt(f, usecols=range(9), skip_header=1)
-    with open(DATA_NUBAR, 'r') as f:
-        table_nubar = np.genfromtxt(f, usecols=range(9), skip_header=1)
-
-    def decode_index(index):
-        ybin = index % 100 - 1
-        xbin = ((index % 10000) - ybin) / 100 - 1 - 1
-        ebin = ((index % 1000000) - xbin*100 -ybin)/10000 - 1 - 1
-        return [map(int, (ebin, xbin, ybin))]
-
-    nu_decoded_index, nubar_decoded_index = [], []
-    for index in table_nu[:,0]:
-        nu_decoded_index.append(decode_index(index))
-    for index in table_nubar[:,0]:
-        nubar_decoded_index.append(decode_index(index))
-
-    nu_decoded_index = np.vstack(nu_decoded_index)
-    nubar_decoded_index = np.vstack(nubar_decoded_index)
-
-    nu_sys = table_nu[:,3:].T
-    nubar_sys = table_nubar[:,3:].T
-    nu_sys_err_2 = nu_sys[0]**2 + nu_sys[1]**2 + nu_sys[2]**2 + \
-            nu_sys[3]**2 + nu_sys[4]**2 + nu_sys[5]**2
-    nubar_sys_err_2 = nubar_sys[0]**2 + nubar_sys[1]**2 + \
-            nubar_sys[2]**2 + nubar_sys[3]**2 + nubar_sys[4]**2 + \
-            nubar_sys[5]**2
-    nu_xsec_array = unumpy.uarray(
-        table_nu[:,1], np.sqrt(table_nu[:,2]**2 + nu_sys_err_2)
-    )
-    nubar_xsec_array = unumpy.uarray(
-        table_nubar[:,1], np.sqrt(table_nubar[:,2]**2 + nubar_sys_err_2)
-    )
-
-    nu_data_matrix = np.zeros(map(len, (E_CENTERS, X_CENTERS, Y_CENTERS)))
-    nubar_data_matrix = np.zeros(map(len, (E_CENTERS, X_CENTERS, Y_CENTERS)))
-    nu_data_matrix = unumpy.uarray(nu_data_matrix, nu_data_matrix)
-    nubar_data_matrix = unumpy.uarray(nubar_data_matrix, nubar_data_matrix)
-    for idx, entry in enumerate(nu_decoded_index):
-        nu_data_matrix[tuple(entry)] = nu_xsec_array[idx]
-    for idx, entry in enumerate(nubar_decoded_index):
-        nubar_data_matrix[tuple(entry)] = nubar_xsec_array[idx]
-    nu_data_matrix = ma.masked_equal(nu_data_matrix, 0)
-    nubar_data_matrix =  ma.masked_equal(nubar_data_matrix, 0)
-
-    return nu_data_matrix, nubar_data_matrix
-
-
-def load_nutev_corrmatrix():
-    """Load the inverse correlation matrix from a HDF5 file."""
-    logging.info('Loading correlation matrix from {0} and '
-                 '{1}'.format(DATA_NU_COV, DATA_NUBAR_COV))
-    h5file_nu = h5py.File(DATA_NU_COV, 'r')
-    h5file_nubar = h5py.File(DATA_NUBAR_COV, 'r')
-    inv_cov_table_nu = np.array(h5file_nu['NuMatr'][:])
-    inv_cov_table_nubar = np.array(h5file_nubar['NubarMatr'][:])
-    h5file_nu.close()
-    h5file_nubar.close()
-
-    inv_cov_matrix_nu = inv_cov_table_nu.reshape(
-        map(len, (E_CENTERS, X_CENTERS, Y_CENTERS)) * 2
-    )
-    inv_cov_matrix_nubar = inv_cov_table_nubar.reshape(
-        map(len, (E_CENTERS, X_CENTERS, Y_CENTERS)) * 2
-    )
-
-    return inv_cov_matrix_nu, inv_cov_matrix_nubar
 
 
 def load_genie_mc():
@@ -256,113 +194,77 @@ def evaluate(params_dict, systematics, nu=True, shape_only=False):
     return scaled_histograms
 
 
-def calculate_chi2(data, mc, corrmatr):
-    data = unumpy.nominal_values(data).data.astype(float)
-    mc = unumpy.nominal_values(mc).data.astype(float)
-    diff = data - mc
-    chi_squared = np.einsum('ijk,ijklmn,lmn->', diff, corrmatr, diff)
-
-    return chi_squared
-
-
-def wrap_calculation(systematics, args=None):
-    NU_HISTOGRAMS = evaluate(
-        args['params_dict'], systematics, nu=args['nu'],
-        shape_only=args['shape_only']
-    )
-    chi_squared = calculate_chi2(
-        args['data'], NU_HISTOGRAMS, args['inv_cov_matrix']
-    )
-
-    # if args['nu']: wa = WA_NU / 1E-38
-    # else: wa = WA_NUBAR / 1E-38
-    # x_bin_sizes = get_bin_sizes(X_BINNING).astype(float)
-    # y_bin_sizes = get_bin_sizes(Y_BINNING).astype(float)
-    # nuisance = 0
-    # for e_idx in xrange(len(E_CENTERS)):
-    #     integral = np.dot(np.dot(unumpy.nominal_values(NU_HISTOGRAMS[e_idx]),
-    #                              y_bin_sizes), x_bin_sizes)
-    #     nuisance += (((integral / wa) - 1) / 0.02) ** 2
-
-    # chi_squared += nuisance
-    logging.info('chi_squared = {0}\n'.format(chi_squared))
-    return chi_squared
-
-
 if __name__ == '__main__':
     set_verbosity(3)
-    nu_data_matrix, nubar_data_matrix = load_nutev_xsec_vec()
-    inv_cov_matrix_nu, inv_cov_matrix_nubar = load_nutev_corrmatrix()
 
     params_dict = load_genie_mc()
     params_dict = only_discc(params_dict)
 
-    # nu = True
-    nu = False
+    a_vals = np.linspace(0.01, 0.2, 40)
 
-    # if nu:
-    #     minim_result = opt.minimize(
-    #         fun=wrap_calculation,
-    #         x0=0.0757,
-    #         args={'params_dict'    : params_dict,
-    #               'data'           : nu_data_matrix,
-    #               'inv_cov_matrix' : inv_cov_matrix_nu,
-    #               'shape_only'     : True,
-    #               'nu'             : True},
-    #         method='L-BFGS-B',
-    #         options={"disp"    : 0,
-    #                  "ftol"    : 2e-7,
-    #                  "eps"     : 1.0e-4,
-    #                  "gtol"    : 1.0e-5,
-    #                  "maxcor"  : 10,
-    #                  "maxfun"  : 15000,
-    #                  "maxiter" : 200}
-    #     )
+    nu = True
+    # nu = False
 
-    # else:
-    #     minim_result = opt.minimize(
-    #         fun=wrap_calculation,
-    #         x0=0.1008,
-    #         args={'params_dict'    : params_dict,
-    #               'data'           : nubar_data_matrix,
-    #               'inv_cov_matrix' : inv_cov_matrix_nubar,
-    #               'shape_only'     : True,
-    #               'nu'             : False},
-    #         method='L-BFGS-B',
-    #         options={"disp"    : 0,
-    #                  "ftol"    : 2e-7,
-    #                  "eps"     : 1.0e-4,
-    #                  "gtol"    : 1.0e-5,
-    #                  "maxcor"  : 10,
-    #                  "maxfun"  : 15000,
-    #                  "maxiter" : 200}
-    #     )
+    expectation_array = []
+    b_vals_array = []
+    for a in a_vals:
+        if nu:
+            opt_histogram = evaluate(
+                params_dict, a, nu=True, shape_only=False
+            )
+        else:
+            opt_histogram = evaluate(
+                params_dict, a, nu=False, shape_only=False
+            )
 
-    # logging.info('{0}'.format(minim_result))
+        if nu: expectation = 1 - 1.65125 * a
+        else: expectation = 1 - 1.8073 * a
+        expectation_array.append(expectation)
+
+        x_bin_sizes = get_bin_sizes(X_BINNING).astype(float)
+        y_bin_sizes = get_bin_sizes(Y_BINNING).astype(float)
+        b_vals = []
+        for e_idx, e_bin in enumerate(E_CENTERS):
+            integral = 0
+            for x_idx, x_bin in enumerate(X_CENTERS):
+                integral += np.sum(opt_histogram[e_idx][x_idx].data * \
+                                   y_bin_sizes) * x_bin_sizes[x_idx]
+            # print(integral)
+            if nu: b = (WA_NU / 1E-38) / integral
+            else: b = (WA_NUBAR / 1E-38) / integral
+            b_vals.append(unumpy.nominal_values(b))
+        b_val = ufloat(np.mean(b_vals), np.std(b_vals))
+        b_vals_array.append(b_val)
+
+    fig = plt.figure(figsize=(9, 5))
+    ax = fig.add_subplot(111)
+    ax.set_xlim(np.min(a_vals)-0.02, np.max(a_vals)+0.02)
+    ax.set_ylim(0.6, 1.0)
+    ax.tick_params(axis='x', labelsize=14)
+    ax.tick_params(axis='y', labelsize=12)
+    ax.set_xlabel('a', fontsize=18)
+    ax.set_ylabel('b', fontsize=15)
+    for ymaj in ax.yaxis.get_majorticklocs():
+        ax.axhline(y=ymaj, ls=':', color='gray', alpha=0.7, linewidth=1)
+    for xmaj in ax.xaxis.get_majorticklocs():
+        ax.axvline(x=xmaj, ls=':', color='gray', alpha=0.7, linewidth=1)
+
+    ax.errorbar(a_vals, expectation_array, xerr=0, yerr=0, capsize=3,
+                alpha=0.5, linestyle='--', markersize=2, linewidth=1,
+                color='blue', label='expectation')
+    ax.errorbar(a_vals, unumpy.nominal_values(b_vals_array), xerr=0,
+                yerr=unumpy.std_devs(b_vals_array), capsize=3, alpha=0.5,
+                linestyle='--', markersize=2, linewidth=1, color='red',
+                label='calculated')
+    legend = ax.legend(prop=dict(size=12))
+    plt.setp(legend.get_title(), fontsize=18)
     if nu:
-        opt_histogram = evaluate(
-            # params_dict, minim_result.x, nu=True, shape_only=False
-            params_dict, 0.15, nu=True, shape_only=False
-        )
+        out = 'correlation_nu.png'
+        tex = r'$\nu$'
     else:
-        opt_histogram = evaluate(
-            # params_dict, minim_result.x, nu=False, shape_only=False
-            params_dict, 0.15, nu=False, shape_only=False
-        )
-
-    x_bin_sizes = get_bin_sizes(X_BINNING).astype(float)
-    y_bin_sizes = get_bin_sizes(Y_BINNING).astype(float)
-    for e_idx, e_bin in enumerate(E_CENTERS):
-        integral = 0
-        for x_idx, x_bin in enumerate(X_CENTERS):
-            integral += np.sum(opt_histogram[e_idx][x_idx].data * \
-                               y_bin_sizes) * x_bin_sizes[x_idx]
-        # print(integral)
-        if nu: b = (WA_NU / 1E-38) / integral
-        else: b = (WA_NUBAR / 1E-38) / integral
-        print(b)
-
-    # jacobian = np.array([1, minim_result.jac[0],
-    #                      minim_result.jac[1], 1]).reshape((2, 2))
-    # covariance = inv(np.dot(jacobian.T, jacobian))
-    # logging.info('Covariance = {0}'.format(covariance))
+        out = 'correlation_nubar.png'
+        tex = r'$\bar{\nu}$'
+    at = AnchoredText(tex, prop=dict(size=20), frameon=True, loc=2)
+    at.patch.set_boxstyle("round,pad=0.,rounding_size=0.5")
+    ax.add_artist(at)
+    fig.savefig(out, bbox_inches='tight', dpi=150)
